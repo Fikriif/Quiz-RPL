@@ -143,12 +143,12 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
         .order('points', { ascending: true });
       if (qsData) setQuestions(qsData as Question[]);
 
-      // 6. Fetch Teams with members
+      // 6. Fetch Teams with members strictly ordered by turn_order (Fixed Team Order)
       const { data: tData } = await supabase
         .from('teams')
         .select('*, members:team_members(*, student:profiles(*))')
         .eq('quiz_id', quizId)
-        .order('current_points', { ascending: false });
+        .order('turn_order', { ascending: true });
       if (tData) setTeams(tData as any[]);
 
       // 7. Find Student's Team strictly using student_id and quiz_id
@@ -220,7 +220,7 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
         if (studentTeam) {
           setMyTeam(studentTeam);
           // Find members for this team
-          const matched = tData?.find((t) => t.id === studentTeam?.team_id || t.id === studentTeam?.id);
+          const matched = tData?.find((t: any) => t.id === studentTeam?.team_id || t.id === studentTeam?.id);
           setMyTeamMembers(matched?.members || []);
         }
       }
@@ -239,7 +239,16 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
           .select('question_id')
           .eq('quiz_session_id', sData.id);
         if (uData) {
-          setUsedQuestionIds(new Set(uData.map((u) => u.question_id)));
+          setUsedQuestionIds(new Set(uData.map((u: any) => u.question_id)));
+        }
+
+        // Auto-reconnect: if turn is currently answering, restore active question modal
+        if (sData.current_question_id && sData.turn_status === 'answering' && qsData) {
+          const activeQ = (qsData as Question[]).find((q) => q.id === sData.current_question_id);
+          if (activeQ) {
+            setSelectedQuestion(activeQ);
+            setIsQuestionModalOpen(true);
+          }
         }
       }
     } catch (err) {
@@ -268,7 +277,7 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
           table: 'quizzes',
           filter: `id=eq.${quizId}`,
         },
-        (payload) => {
+        (payload: any) => {
           const updated = payload.new as Quiz;
           setQuiz((prev) => {
             const next = prev ? { ...prev, ...updated } : updated;
@@ -293,7 +302,7 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
           table: 'quiz_sessions',
           filter: `quiz_id=eq.${quizId}`,
         },
-        (payload) => {
+        (payload: any) => {
           if (payload.new) {
             const newSession = payload.new as QuizSession;
             setSession(newSession);
@@ -325,7 +334,7 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
           schema: 'public',
           table: 'question_usage',
         },
-        (payload) => {
+        (payload: any) => {
           if (payload.eventType === 'INSERT') {
             const usage = payload.new as QuestionUsage;
             setUsedQuestionIds((prev) => new Set([...prev, usage.question_id]));
@@ -341,7 +350,7 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
           table: 'teams',
           filter: `quiz_id=eq.${quizId}`,
         },
-        (payload) => {
+        (payload: any) => {
           const updatedTeam = payload.new as Team;
           setTeams((prev) => prev.map((t) => (t.id === updatedTeam.id ? { ...t, ...updatedTeam } : t)));
           setMyTeam((prev) => (prev && (prev.team_id === updatedTeam.id || prev.id === updatedTeam.id) ? { ...prev, ...updatedTeam } : prev));
@@ -394,17 +403,17 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
             }
           }
 
-          // Re-fetch all teams with members
+          // Re-fetch all teams with members in fixed turn order
           const { data: tData } = await supabase
             .from('teams')
             .select('*, members:team_members(*, student:profiles(*))')
             .eq('quiz_id', quizId)
-            .order('current_points', { ascending: false });
+            .order('turn_order', { ascending: true });
 
           if (tData) {
             setTeams(tData as any[]);
             if (authId) {
-              const matched = tData.find((t) =>
+              const matched = tData.find((t: any) =>
                 (t.members || []).some((m: any) => m.student_id === authId)
               );
               if (matched) {
@@ -569,26 +578,63 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
       throw new Error('Data sesi atau tim tidak lengkap.');
     }
 
-    // 4. Call atomic RPC
+    // 4. Call atomic RPC with timeout flag
     const { data, error } = await supabase.rpc('submit_quiz_answer', {
       p_session_id: activeSession.id,
       p_question_id: selectedQuestion.id,
       p_team_id: activeTeam.team_id || activeTeam.id,
       p_student_id: activeUser,
       p_answer: selectedOption,
+      p_is_timeout: false,
     });
 
     if (error) {
-      console.error('[StudentQuiz] RPC submit_quiz_answer error:', {
-        code: error.code,
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
-      });
+      console.error('[StudentQuiz] RPC submit_quiz_answer error:', error);
       throw error;
     }
 
     // 5. Update local state
+    setUsedQuestionIds((prev) => new Set([...prev, selectedQuestion.id]));
+    if (data && activeTeam) {
+      setMyTeam((prev) => (prev ? { ...prev, current_points: data.new_score } : null));
+    }
+
+    return data as SubmitAnswerResult;
+  };
+
+  const handleTimeoutAnswer = async (): Promise<SubmitAnswerResult> => {
+    let activeSession = session;
+    let activeUser = currentUserId;
+    let activeTeam = myTeam;
+
+    if (!activeUser) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user) {
+        activeUser = user.id;
+        setCurrentUserId(user.id);
+      }
+    }
+
+    if (!activeSession || !selectedQuestion || !activeTeam || !activeUser) {
+      throw new Error('Data sesi atau tim tidak lengkap untuk proses timeout.');
+    }
+
+    const { data, error } = await supabase.rpc('submit_quiz_answer', {
+      p_session_id: activeSession.id,
+      p_question_id: selectedQuestion.id,
+      p_team_id: activeTeam.team_id || activeTeam.id,
+      p_student_id: activeUser,
+      p_answer: 'TIMEOUT',
+      p_is_timeout: true,
+    });
+
+    if (error) {
+      console.error('[StudentQuiz] RPC timeout error:', error);
+      throw error;
+    }
+
     setUsedQuestionIds((prev) => new Set([...prev, selectedQuestion.id]));
     if (data && activeTeam) {
       setMyTeam((prev) => (prev ? { ...prev, current_points: data.new_score } : null));
@@ -696,20 +742,7 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
       }
     }
 
-    // Mandatory debug logs before submit (Section 2 & 3)
-    console.log("CODING SUBMIT DEBUG", {
-      sessionId,
-      questionId,
-      teamId,
-      studentId,
-      codeAnswer,
-      testResults,
-      testResultsLength: testResults?.length,
-      passedCount: testResults?.filter((r: any) => r.passed === true).length,
-    });
-    console.log("CALLING submit_coding_quiz_answer");
-
-    // Call atomic RPC with canonical parameters (Section 4)
+    // Call atomic RPC with canonical parameters and timeout flag false
     const { data: rpcRes, error: rpcErr } = await supabase.rpc('submit_coding_quiz_answer', {
       p_session_id: sessionId,
       p_question_id: questionId,
@@ -718,18 +751,58 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
       p_code_answer: codeAnswer,
       p_test_results: testResults,
       p_score: null,
+      p_is_timeout: false,
     });
-
-    // Mandatory debug logs after RPC (Section 9)
-    console.log("CODING RPC RESULT", rpcRes);
 
     if (rpcErr) {
       console.error('[StudentQuiz] coding RPC error:', rpcErr);
-      console.error('[StudentQuiz] submit_coding_quiz_answer error:', rpcErr);
       throw rpcErr;
     }
 
     // Update local state
+    setUsedQuestionIds((prev) => new Set([...prev, selectedQuestion.id]));
+    if (rpcRes && activeTeam) {
+      setMyTeam((prev) => (prev ? { ...prev, current_points: rpcRes.new_score } : null));
+    }
+
+    return rpcRes as SubmitCodingResult;
+  };
+
+  const handleTimeoutCodingAnswer = async (): Promise<SubmitCodingResult> => {
+    let activeSession = session;
+    let activeUser = currentUserId;
+    let activeTeam = myTeam;
+
+    if (!activeUser) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user) {
+        activeUser = user.id;
+        setCurrentUserId(user.id);
+      }
+    }
+
+    if (!activeSession || !selectedQuestion || !activeTeam || !activeUser) {
+      throw new Error('Data sesi atau tim tidak lengkap.');
+    }
+
+    const { data: rpcRes, error: rpcErr } = await supabase.rpc('submit_coding_quiz_answer', {
+      p_session_id: activeSession.id,
+      p_question_id: selectedQuestion.id,
+      p_team_id: activeTeam.team_id || activeTeam.id,
+      p_student_id: activeUser,
+      p_code_answer: '[TIMEOUT - WAKTU HABIS]',
+      p_test_results: [],
+      p_score: null,
+      p_is_timeout: true,
+    });
+
+    if (rpcErr) {
+      console.error('[StudentQuiz] coding timeout RPC error:', rpcErr);
+      throw rpcErr;
+    }
+
     setUsedQuestionIds((prev) => new Set([...prev, selectedQuestion.id]));
     if (rpcRes && activeTeam) {
       setMyTeam((prev) => (prev ? { ...prev, current_points: rpcRes.new_score } : null));
@@ -973,6 +1046,43 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
                   </div>
                 </div>
               </div>
+
+              {/* Fixed Team Turn Order Sequence Strip */}
+              {teams.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 shrink-0">
+                    🔄 Urutan Giliran:
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto">
+                    {teams.map((t, idx) => {
+                      const isCurrent = t.id === session.current_team_id;
+                      const isMy = t.id === myTeamId;
+                      return (
+                        <React.Fragment key={t.id}>
+                          <div
+                            className={`flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-semibold transition-all ${
+                              isCurrent
+                                ? 'bg-amber-500/25 text-amber-300 border border-amber-400/60 shadow-sm ring-1 ring-amber-400/40 font-bold'
+                                : isMy
+                                ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                                : 'bg-slate-950 text-slate-400 border border-slate-800'
+                            }`}
+                          >
+                            <span className="w-3.5 h-3.5 rounded-full bg-slate-800 flex items-center justify-center text-[9px] font-bold">
+                              {t.turn_order || idx + 1}
+                            </span>
+                            <span>{t.name}</span>
+                            {isCurrent && <span className="text-[9px] text-amber-400 font-bold">●</span>}
+                            {isMy && !isCurrent && <span className="text-[9px] text-blue-400">(Tim Kamu)</span>}
+                          </div>
+                          {idx < teams.length - 1 && <span className="text-slate-600 font-bold">→</span>}
+                        </React.Fragment>
+                      );
+                    })}
+                    <span className="text-slate-600 font-bold">→ 🔄 (Loop)</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1137,10 +1247,13 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
           onClose={() => setIsQuestionModalOpen(false)}
           question={selectedQuestion}
           categoryName={categories.find((c) => c.id === selectedQuestion.category_id)?.name}
+          turnStartedAt={session?.turn_started_at}
           isTeacher={false}
           isReadOnly={!isMyPlayerTurn}
           onSubmitAnswer={handleSubmitAnswer}
+          onTimeoutAnswer={handleTimeoutAnswer}
           onSubmitCodingAnswer={handleSubmitCodingAnswer}
+          onTimeoutCodingAnswer={handleTimeoutCodingAnswer}
           isLoading={isLoading}
           isDataReady={Boolean(session && myTeam && currentUserId && selectedQuestion)}
         />

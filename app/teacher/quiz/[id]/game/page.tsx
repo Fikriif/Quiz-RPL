@@ -33,6 +33,7 @@ import { QuestionBoard } from '@/components/question-board/QuestionBoard';
 import { Leaderboard } from '@/components/leaderboard/Leaderboard';
 import { QuestionModal } from '@/components/quiz/QuestionModal';
 import { SubmissionsReviewModal } from '@/components/teacher/SubmissionsReviewModal';
+import { CountdownTimer } from '@/components/ui/CountdownTimer';
 import { createClient } from '@/lib/supabase/client';
 import { Quiz, Category, Question, Team, QuizSession, QuestionUsage, QuizStatus } from '@/types/database';
 
@@ -119,12 +120,12 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
         .order('points', { ascending: true });
       if (qsData) setQuestions(qsData as Question[]);
 
-      // 5. Fetch Teams
+      // 5. Fetch Teams strictly ordered by turn_order (Fixed Team Order)
       const { data: tData } = await supabase
         .from('teams')
         .select('*, members:team_members(*)')
         .eq('quiz_id', quizId)
-        .order('current_points', { ascending: false });
+        .order('turn_order', { ascending: true });
       if (tData) setTeams(tData as Team[]);
 
       // 6. Fetch Used Questions for this session
@@ -134,7 +135,7 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
           .select('question_id')
           .eq('quiz_session_id', sData.id);
         if (uData) {
-          setUsedQuestionIds(new Set(uData.map((u) => u.question_id)));
+          setUsedQuestionIds(new Set(uData.map((u: any) => u.question_id)));
         }
       }
     } catch (err) {
@@ -162,7 +163,7 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
           table: 'quizzes',
           filter: `id=eq.${quizId}`,
         },
-        (payload) => {
+        (payload: any) => {
           const updatedQuiz = payload.new as Quiz;
           setQuiz((prev) => (prev ? { ...prev, ...updatedQuiz } : updatedQuiz));
         }
@@ -174,7 +175,7 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
           schema: 'public',
           table: 'question_usage',
         },
-        (payload) => {
+        (payload: any) => {
           if (payload.eventType === 'INSERT') {
             const usage = payload.new as QuestionUsage;
             setUsedQuestionIds((prev) => new Set([...prev, usage.question_id]));
@@ -189,13 +190,13 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
           table: 'team_members',
         },
         () => {
-          // Re-fetch teams to update live member counts in lobby
+          // Re-fetch teams in fixed turn order
           supabase
             .from('teams')
             .select('*, members:team_members(*)')
             .eq('quiz_id', quizId)
-            .order('current_points', { ascending: false })
-            .then(({ data }) => {
+            .order('turn_order', { ascending: true })
+            .then(({ data }: any) => {
               if (data) setTeams(data as Team[]);
             });
         }
@@ -209,7 +210,7 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
           table: 'quiz_sessions',
           filter: `quiz_id=eq.${quizId}`,
         },
-        (payload) => {
+        (payload: any) => {
           if (payload.new) {
             setSession(payload.new as QuizSession);
           }
@@ -222,7 +223,7 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
     };
   }, [quizId, supabase]);
 
-  const activeTurnTeam = teams.find((t) => t.id === session?.current_team_id) || teams[currentTeamIndex] || teams[0];
+  const activeTurnTeam = teams.find((t) => t.id === session?.current_team_id) || teams[0];
   const allGameMembers = teams.flatMap((t: any) => t.members || []);
   const activeTurnPlayer = allGameMembers.find((m: any) => m.student_id === session?.current_player_id)?.student?.name || 'Pemain';
   const activeTurnQuestion = questions.find((q) => q.id === session?.current_question_id);
@@ -484,29 +485,24 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
             </Button>
           )}
 
-          {/* Status: ACTIVE -> Show Turn Selector & Finish Quiz Button */}
+          {/* Status: ACTIVE -> Show Turn Indicator & Advance Turn Button */}
           {quiz.status === 'active' && (
             <>
               <div className="flex items-center gap-2 p-1.5 rounded-xl bg-slate-950 border border-slate-800">
-                <span className="text-xs font-bold text-slate-400 pl-2">Giliran Tim:</span>
-                <select
-                  value={currentTeamIndex}
-                  onChange={(e) => setCurrentTeamIndex(parseInt(e.target.value))}
-                  className="bg-blue-600/20 text-blue-300 font-bold text-xs py-1.5 px-3 rounded-lg border border-blue-500/40 focus:outline-none"
-                >
-                  {teams.map((t, idx) => (
-                    <option key={t.id} value={idx} className="bg-slate-900 text-white">
-                      {t.name} ({t.current_points} pts)
-                    </option>
-                  ))}
-                </select>
-                <button
+                <span className="text-xs font-bold text-slate-400 pl-2">Giliran Aktif:</span>
+                <span className="text-xs font-bold text-amber-300 px-2.5 py-1 bg-amber-500/10 rounded-lg border border-amber-500/30 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  Turn #{session?.turn_number || 1}: {currentTeam?.name || 'Loading...'}
+                </span>
+                <Button
                   onClick={handleNextTurn}
-                  title="Pindah ke Tim Berikutnya"
-                  className="p-1.5 text-slate-400 hover:text-white rounded hover:bg-slate-800"
+                  variant="outline"
+                  size="sm"
+                  title="Pindah ke Tim Berikutnya (Sesuai Urutan Giliran Tetap)"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 text-xs font-semibold shrink-0"
                 >
                   <ChevronRight className="w-4 h-4" />
-                </button>
+                </Button>
               </div>
 
               <Button
@@ -570,8 +566,41 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
             <span>PERTANDINGAN SEDANG BERLANGSUNG (LIVE MATCH)</span>
           </div>
           <span className="text-slate-400">
-            Pilih soal pada board untuk menampilkan pertanyaan kepada tim yang sedang giliran.
+            Giliran berpindah secara otomatis dan tetap (Round-Robin) setiap kali soal selesai.
           </span>
+        </div>
+      )}
+
+      {/* Fixed Team Turn Order Sequence Strip */}
+      {quiz.status === 'active' && teams.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-xs">
+          <span className="font-extrabold text-slate-400 uppercase tracking-wider text-[10px] flex items-center gap-1 shrink-0">
+            🔄 Urutan Giliran Tetap:
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto">
+            {teams.map((t, idx) => {
+              const isCurrent = t.id === session?.current_team_id;
+              return (
+                <React.Fragment key={t.id}>
+                  <div
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                      isCurrent
+                        ? 'bg-amber-500/25 text-amber-300 border border-amber-400/60 shadow-md shadow-amber-500/20 ring-1 ring-amber-400/50'
+                        : 'bg-slate-800/80 text-slate-400 border border-slate-700/60'
+                    }`}
+                  >
+                    <span className="w-4 h-4 rounded-full bg-slate-900/80 flex items-center justify-center text-[10px] font-black text-slate-300">
+                      {t.turn_order || idx + 1}
+                    </span>
+                    <span>{t.name}</span>
+                    {isCurrent && <span className="text-[10px] text-amber-400 animate-pulse font-black">● (Aktif)</span>}
+                  </div>
+                  {idx < teams.length - 1 && <span className="text-slate-600 font-bold">→</span>}
+                </React.Fragment>
+              );
+            })}
+            <span className="text-slate-600 font-bold">→ 🔄 (Loop)</span>
+          </div>
         </div>
       )}
 
@@ -581,52 +610,107 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
         <div className="lg:col-span-8 space-y-4">
           {/* Active Turn Indicator Banner */}
           {currentTeam && quiz.status === 'active' && (
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-2xl bg-gradient-to-r from-blue-950/60 via-indigo-950/40 to-slate-900 border border-blue-500/40 shadow-xl gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-xl bg-blue-600/30 border border-blue-400/50 flex flex-col items-center justify-center text-blue-300 font-black">
-                  <span className="text-[9px] uppercase tracking-wider text-blue-400 font-semibold leading-none">Turn</span>
-                  <span className="text-lg leading-tight">{session?.turn_number || 1}</span>
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-950/60 via-indigo-950/40 to-slate-900 border border-blue-500/40 shadow-xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-blue-600/30 border border-blue-400/50 flex flex-col items-center justify-center text-blue-300 font-black">
+                    <span className="text-[9px] uppercase tracking-wider text-blue-400 font-semibold leading-none">Turn</span>
+                    <span className="text-lg leading-tight">{session?.turn_number || 1}</span>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] uppercase font-bold text-blue-400 tracking-wider">
+                        Giliran Aktif
+                      </span>
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full border ${
+                        session?.turn_status === 'answering'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                          : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                      }`}>
+                        {session?.turn_status === 'answering' ? '⏳ Sedang Menjawab' : '🎯 Memilih Soal'}
+                      </span>
+                    </div>
+                    <h3 className="text-xl font-black text-white flex items-center gap-2">
+                      {currentTeam.name}
+                      {activeTurnPlayer && activeTurnPlayer !== 'Pemain' && (
+                        <span className="text-xs font-normal text-slate-300 bg-slate-800/80 px-2.5 py-0.5 rounded-md border border-slate-700">
+                          👤 {activeTurnPlayer}
+                        </span>
+                      )}
+                    </h3>
+                  </div>
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] uppercase font-bold text-blue-400 tracking-wider">
-                      Giliran Aktif
+
+                <div className="flex items-center gap-4 justify-between sm:justify-end">
+                  <div className="text-right">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                      Poin Tim
                     </span>
-                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                      {session?.turn_status === 'answering' ? '⏳ Sedang Menjawab' : '🎯 Memilih Soal'}
+                    <span className="text-xl font-black font-mono text-amber-400">
+                      {currentTeam.current_points.toLocaleString()} PTS
                     </span>
                   </div>
-                  <h3 className="text-xl font-black text-white flex items-center gap-2">
-                    {currentTeam.name}
-                    {activeTurnPlayer && activeTurnPlayer !== 'Pemain' && (
-                      <span className="text-xs font-normal text-slate-300 bg-slate-800/80 px-2.5 py-0.5 rounded-md border border-slate-700">
-                        👤 {activeTurnPlayer}
-                      </span>
-                    )}
-                  </h3>
+
+                  <Button
+                    onClick={handleAdminAdvanceTurn}
+                    variant="outline"
+                    size="sm"
+                    className="bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 text-xs font-semibold shrink-0"
+                    title="Lewati atau ganti giliran ke tim & pemain berikutnya (Urutan Tetap)"
+                  >
+                    ⏭️ Ganti Giliran
+                  </Button>
                 </div>
               </div>
 
-              <div className="flex items-center gap-4 justify-between sm:justify-end">
-                <div className="text-right">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
-                    Poin Tim
-                  </span>
-                  <span className="text-xl font-black font-mono text-amber-400">
-                    {currentTeam.current_points.toLocaleString()} PTS
-                  </span>
-                </div>
+              {/* Active Answering Question Info & Live Countdown */}
+              {session?.turn_status === 'answering' && activeTurnQuestion && (
+                <div className="pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-slate-950/40 p-3 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      <Clock className="w-5 h-5 animate-spin" style={{ animationDuration: '4s' }} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
+                          Soal Aktif ({activeTurnQuestion.question_type === 'coding' ? 'Interactive Coding' : 'Multiple Choice'})
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                          +{activeTurnQuestion.points} PTS
+                        </span>
+                      </div>
+                      <p className="text-sm font-semibold text-slate-200 line-clamp-1">
+                        {activeTurnQuestion.question}
+                      </p>
+                      {session.turn_started_at && (
+                        <span className="text-[10px] text-slate-400">
+                          Mulai: {new Date(session.turn_started_at).toLocaleTimeString('id-ID')} | Limit: {activeTurnQuestion.time_limit_seconds || 30}s
+                        </span>
+                      )}
+                    </div>
+                  </div>
 
-                <Button
-                  onClick={handleAdminAdvanceTurn}
-                  variant="outline"
-                  size="sm"
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700 text-xs font-semibold shrink-0"
-                  title="Lewati atau ganti giliran ke tim & pemain berikutnya"
-                >
-                  ⏭️ Ganti Giliran
-                </Button>
-              </div>
+                  <div className="flex items-center gap-3 self-end sm:self-center">
+                    <CountdownTimer
+                      initialSeconds={activeTurnQuestion.time_limit_seconds || 30}
+                      turnStartedAt={session?.turn_started_at}
+                      isActive={true}
+                      size="sm"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedQuestion(activeTurnQuestion);
+                        setIsQuestionModalOpen(true);
+                      }}
+                      className="text-xs"
+                    >
+                      Buka Soal
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -689,6 +773,7 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
           onClose={() => setIsQuestionModalOpen(false)}
           question={selectedQuestion}
           categoryName={categories.find((c) => c.id === selectedQuestion.category_id)?.name}
+          turnStartedAt={session?.turn_started_at}
           isTeacher={true}
           onTeacherAwardPoints={handleTeacherAwardPoints}
           onNextQuestion={handleNextTurn}

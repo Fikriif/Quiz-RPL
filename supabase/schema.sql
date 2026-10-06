@@ -67,9 +67,28 @@ CREATE TABLE IF NOT EXISTS public.teams (
     description TEXT,
     starting_points INT NOT NULL DEFAULT 1000 CHECK (starting_points >= 0),
     current_points INT NOT NULL DEFAULT 1000 CHECK (current_points >= 0),
+    turn_order INT NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE OR REPLACE FUNCTION public.set_team_turn_order()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.turn_order IS NULL OR NEW.turn_order <= 0 THEN
+        SELECT COALESCE(MAX(turn_order), 0) + 1 INTO NEW.turn_order
+        FROM public.teams
+        WHERE quiz_id = NEW.quiz_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_set_team_turn_order ON public.teams;
+CREATE TRIGGER trg_set_team_turn_order
+    BEFORE INSERT ON public.teams
+    FOR EACH ROW
+    EXECUTE FUNCTION public.set_team_turn_order();
 
 -- 8. TEAM MEMBERS TABLE (1 Student per Quiz constraint)
 CREATE TABLE IF NOT EXISTS public.team_members (
@@ -136,13 +155,20 @@ CREATE INDEX IF NOT EXISTS idx_question_usage_session ON public.question_usage(q
 -- ==============================================================================
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_role TEXT;
 BEGIN
+    v_role := LOWER(COALESCE(NEW.raw_user_meta_data->>'role', 'student'));
+    IF v_role NOT IN ('teacher', 'student') THEN
+        v_role := 'student';
+    END IF;
+
     INSERT INTO public.profiles (id, name, email, role, created_at, updated_at)
     VALUES (
         NEW.id,
         COALESCE(NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1)),
         NEW.email,
-        COALESCE(NEW.raw_user_meta_data->>'role', 'student'),
+        v_role,
         NOW(),
         NOW()
     )
@@ -541,6 +567,12 @@ CREATE POLICY "Public profiles are readable by all authenticated users"
     ON public.profiles FOR SELECT
     TO authenticated
     USING (true);
+
+DROP POLICY IF EXISTS "Users can insert their own profile" ON public.profiles;
+CREATE POLICY "Users can insert their own profile"
+    ON public.profiles FOR INSERT
+    TO authenticated
+    WITH CHECK (auth.uid() = id);
 
 DROP POLICY IF EXISTS "Users can update their own profile" ON public.profiles;
 CREATE POLICY "Users can update their own profile"

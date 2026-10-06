@@ -62,7 +62,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({
           table: 'teams',
           filter: `quiz_id=eq.${quizId}`,
         },
-        (payload) => {
+        (payload: any) => {
           if (payload.eventType === 'UPDATE') {
             const updatedTeam = payload.new as Team;
             setTeams((prev) => {

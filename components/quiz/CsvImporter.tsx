@@ -171,7 +171,7 @@ export const CsvImporter: React.FC<CsvImporterProps> = ({ quizId, onImportSucces
         .eq('quiz_id', quizId);
 
       const categoryMap = new Map<string, string>();
-      (existingCats || []).forEach((c) => categoryMap.set(c.name.toLowerCase(), c.id));
+      (existingCats || []).forEach((c: any) => categoryMap.set(c.name.toLowerCase(), c.id));
 
       // Insert new categories if they don't exist
       for (let i = 0; i < uniqueCategoryNames.length; i++) {

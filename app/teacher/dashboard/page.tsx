@@ -65,7 +65,7 @@ export default function TeacherDashboard() {
               .from('teams')
               .select('*', { count: 'exact', head: true });
 
-            const activeCount = quizList.filter((q) => q.status === 'active').length;
+            const activeCount = (quizList as any[]).filter((q: any) => q.status === 'active').length;
 
             setStats({
               totalQuizzes: quizList.length,

@@ -102,11 +102,12 @@ export default function CreateQuizPage() {
       await supabase.from('categories').insert(catInserts);
 
       // 3. Insert Teams
-      const teamInserts = teams.map((teamName) => ({
+      const teamInserts = teams.map((teamName, idx) => ({
         quiz_id: quiz.id,
         name: teamName,
         starting_points: startingPoints,
         current_points: startingPoints,
+        turn_order: idx + 1,
       }));
       await supabase.from('teams').insert(teamInserts);
 

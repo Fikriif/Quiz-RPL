@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
-import { CheckCircle, XCircle, HelpCircle, ArrowRight, ShieldAlert, Sparkles, AlertCircle } from 'lucide-react';
+import { CheckCircle, XCircle, HelpCircle, ArrowRight, ShieldAlert, Sparkles, AlertCircle, AlertTriangle, Clock } from 'lucide-react';
 import { Question, SubmitAnswerResult, SubmitCodingResult, TestResultItem } from '@/types/database';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
@@ -16,15 +16,18 @@ interface QuestionModalProps {
   onClose: () => void;
   question: Question | null;
   categoryName?: string;
+  turnStartedAt?: string | null;
   isTeacher?: boolean;
   isReadOnly?: boolean;
   onSubmitAnswer?: (selectedOption: 'A' | 'B' | 'C' | 'D') => Promise<SubmitAnswerResult>;
+  onTimeoutAnswer?: () => Promise<SubmitAnswerResult>;
   onSubmitCodingAnswer?: (data: {
     codeBundle: CodeBundle;
     testResults: TestResultItem[];
     scoreAwarded: number;
     allPassed: boolean;
   }) => Promise<SubmitCodingResult>;
+  onTimeoutCodingAnswer?: () => Promise<SubmitCodingResult>;
   onTeacherAwardPoints?: (isCorrect: boolean) => Promise<void>;
   onNextQuestion?: () => void;
   isLoading?: boolean;
@@ -36,10 +39,13 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
   onClose,
   question,
   categoryName,
+  turnStartedAt,
   isTeacher = false,
   isReadOnly = false,
   onSubmitAnswer,
+  onTimeoutAnswer,
   onSubmitCodingAnswer,
+  onTimeoutCodingAnswer,
   onTeacherAwardPoints,
   onNextQuestion,
   isLoading = false,
@@ -50,6 +56,21 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isRevealed, setIsRevealed] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isTimedOut, setIsTimedOut] = useState(false);
+  const timeoutTriggeredRef = useRef(false);
+
+  // Reset local state when modal opens with a new question
+  useEffect(() => {
+    if (isOpen && question) {
+      setSelectedOption(null);
+      setSubmissionResult(null);
+      setErrorMessage(null);
+      setIsRevealed(false);
+      setIsSubmitting(false);
+      setIsTimedOut(false);
+      timeoutTriggeredRef.current = false;
+    }
+  }, [isOpen, question?.id]);
 
   if (!question) return null;
 
@@ -61,9 +82,11 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
         onClose={onClose}
         question={question}
         categoryName={categoryName}
+        turnStartedAt={turnStartedAt}
         isTeacher={isTeacher}
         isReadOnly={isReadOnly}
         onSubmitCodingAnswer={onSubmitCodingAnswer}
+        onTimeoutCodingAnswer={onTimeoutCodingAnswer}
         onNextQuestion={onNextQuestion}
         isLoading={isLoading}
         isDataReady={isDataReady}
@@ -76,24 +99,28 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
     setSubmissionResult(null);
     setErrorMessage(null);
     setIsRevealed(false);
+    setIsTimedOut(false);
+    timeoutTriggeredRef.current = false;
     onClose();
   };
 
   const handleSelectOption = (opt: 'A' | 'B' | 'C' | 'D') => {
-    if (submissionResult || isRevealed) return;
+    if (submissionResult || isRevealed || isTimedOut || isSubmitting) return;
     setErrorMessage(null);
     setSelectedOption(opt);
   };
 
+  // Submit Answer Triggered by Student
   const handleSubmit = async () => {
-    if (!selectedOption || !onSubmitAnswer || !isDataReady) return;
+    if (!selectedOption || !onSubmitAnswer || !isDataReady || isTimedOut || isSubmitting) return;
     setIsSubmitting(true);
     setErrorMessage(null);
     try {
       const result = await onSubmitAnswer(selectedOption);
       setSubmissionResult(result);
-      if (result.is_correct) {
-        // Trigger celebration confetti
+      if (result.is_timeout) {
+        setIsTimedOut(true);
+      } else if (result.is_correct) {
         confetti({
           particleCount: 100,
           spread: 70,
@@ -105,6 +132,32 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
       setErrorMessage(err.message || 'Gagal mengirim jawaban.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Auto Timeout Triggered by Countdown Timer hitting 0
+  const handleTimeUp = async () => {
+    if (isTeacher || isReadOnly || submissionResult || isTimedOut || timeoutTriggeredRef.current) {
+      return;
+    }
+
+    timeoutTriggeredRef.current = true;
+    setIsTimedOut(true);
+    setErrorMessage(null);
+
+    // Call server timeout RPC
+    if (onTimeoutAnswer) {
+      setIsSubmitting(true);
+      try {
+        const result = await onTimeoutAnswer();
+        if (result) {
+          setSubmissionResult(result);
+        }
+      } catch (err: any) {
+        console.error('[QuestionModal] Timeout error:', err);
+      } finally {
+        setIsSubmitting(false);
+      }
     }
   };
 
@@ -137,6 +190,8 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
     { key: 'D', text: question.option_d || '' },
   ];
 
+  const timeLimitSeconds = question.time_limit_seconds && question.time_limit_seconds > 0 ? question.time_limit_seconds : 30;
+
   return (
     <Modal isOpen={isOpen} onClose={handleClose} maxWidth="2xl" showCloseButton={!isSubmitting}>
       <div className="space-y-6">
@@ -151,9 +206,28 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
             </Badge>
           </div>
           {!submissionResult && !isRevealed && (
-            <CountdownTimer initialSeconds={30} isActive={isOpen} size="sm" />
+            <CountdownTimer
+              initialSeconds={timeLimitSeconds}
+              turnStartedAt={turnStartedAt}
+              isActive={isOpen && !submissionResult && !isRevealed && !isTimedOut}
+              onTimeUp={handleTimeUp}
+              size="sm"
+            />
           )}
         </div>
+
+        {/* Timeout Alert Banner */}
+        {isTimedOut && !submissionResult && (
+          <div className="p-4 rounded-xl bg-rose-500/20 border border-rose-500/50 flex items-center gap-3 text-rose-300 animate-pulse">
+            <Clock className="w-5 h-5 text-rose-400 shrink-0" />
+            <div>
+              <h4 className="font-bold text-sm text-white">WAKTU HABIS!</h4>
+              <p className="text-xs text-rose-300">
+                Waktu menjawab telah habis. Jawaban otomatis dikirim dan dianggap salah.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Question Text */}
         <div className="p-4 rounded-xl bg-slate-800/60 border border-slate-700/60">
@@ -205,13 +279,15 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
                 'bg-blue-600/30 border-blue-500 text-white font-bold neon-glow-blue';
             }
 
+            const isDisabled = isReadOnly || Boolean(submissionResult) || isRevealed || isSubmitting || isTimedOut;
+
             return (
               <button
                 key={opt.key}
-                disabled={isReadOnly || Boolean(submissionResult) || isRevealed || isSubmitting}
-                onClick={() => !isReadOnly && handleSelectOption(opt.key)}
+                disabled={isDisabled}
+                onClick={() => !isDisabled && handleSelectOption(opt.key)}
                 className={`flex items-start gap-3 p-4 rounded-xl border text-left transition-all duration-200 select-none ${
-                  !isReadOnly && !submissionResult && !isRevealed ? 'cursor-pointer' : 'cursor-default'
+                  !isDisabled ? 'cursor-pointer' : 'cursor-default opacity-90'
                 } ${optionStyle}`}
               >
                 <div
@@ -257,7 +333,11 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
             )}
             <div>
               <h4 className="font-extrabold text-lg">
-                {submissionResult.is_correct ? 'JAWABAN BENAR!' : 'JAWABAN SALAH!'}
+                {submissionResult.is_timeout
+                  ? '⏳ WAKTU HABIS! (TIMEOUT)'
+                  : submissionResult.is_correct
+                  ? '✓ JAWABAN BENAR!'
+                  : '✗ JAWABAN SALAH!'}
               </h4>
               <p className="text-sm font-semibold">
                 {submissionResult.is_correct
@@ -299,11 +379,11 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
                   <Button
                     variant="primary"
                     size="lg"
-                    disabled={!selectedOption || isSubmitting || isLoading || !isDataReady}
+                    disabled={!selectedOption || isSubmitting || isLoading || !isDataReady || isTimedOut}
                     isLoading={isSubmitting}
                     onClick={handleSubmit}
                   >
-                    Kirim Jawaban
+                    {isTimedOut ? 'Waktu Habis' : 'Kirim Jawaban'}
                   </Button>
                 ) : (
                   <Button variant="secondary" size="lg" disabled className="text-xs font-semibold">
@@ -316,8 +396,8 @@ export const QuestionModal: React.FC<QuestionModalProps> = ({
 
           {!isTeacher && submissionResult && (
             <div className="w-full flex justify-end">
-              <Button variant="accent" size="lg" onClick={handleClose}>
-                Tutup & Kembali ke Board
+              <Button variant="accent" size="lg" onClick={handleClose} className="font-bold">
+                Tutup & Lanjut ke Giliran Berikutnya
               </Button>
             </div>
           )}

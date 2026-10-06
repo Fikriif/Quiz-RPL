@@ -109,7 +109,7 @@ export default function EditQuizPage({ params }: { params: Promise<{ id: string 
         .from('teams')
         .select('*, members:team_members(*)')
         .eq('quiz_id', quizId)
-        .order('created_at', { ascending: true });
+        .order('turn_order', { ascending: true });
       if (tData) setTeams(tData as any[]);
     } catch (err) {
       console.error(err);
@@ -275,6 +275,7 @@ export default function EditQuizPage({ params }: { params: Promise<{ id: string 
           description: newTeamDesc.trim() || null,
           starting_points: quiz.starting_points,
           current_points: quiz.starting_points,
+          turn_order: teams.length + 1,
         })
         .select()
         .single();

@@ -26,44 +26,87 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  // Refresh auth token
+  // Helper to create redirect response while preserving cookies set by Supabase
+  const createRedirect = (targetPath: string, searchParams?: Record<string, string>) => {
+    const url = request.nextUrl.clone();
+    url.pathname = targetPath;
+    url.search = '';
+    if (searchParams) {
+      Object.entries(searchParams).forEach(([k, v]) => url.searchParams.set(k, v));
+    }
+    const redirectResponse = NextResponse.redirect(url);
+    // Forward any session cookies that Supabase might have updated
+    supabaseResponse.cookies.getAll().forEach((cookie) => {
+      redirectResponse.cookies.set(cookie.name, cookie.value, cookie);
+    });
+    return redirectResponse;
+  };
+
+  // Refresh auth token and get user
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
 
-  // Protect Teacher Routes
+  let userRole: string | null = null;
+
+  if (user) {
+    // 1. Check user metadata first (fastest)
+    userRole = (user.user_metadata?.role as string) || null;
+
+    // 2. If not found in metadata, query profiles table
+    if (!userRole) {
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (profile?.role) {
+          userRole = profile.role;
+        }
+      } catch (err) {
+        console.error('Middleware profile lookup error:', err);
+      }
+    }
+
+    // Default to student if still undefined
+    if (!userRole) {
+      userRole = 'student';
+    }
+  }
+
+  // 1. Protect Teacher Routes (/teacher/*)
   if (path.startsWith('/teacher')) {
     if (!user) {
-      const url = request.nextUrl.clone();
-      url.pathname = '/login';
-      url.searchParams.set('redirect', path);
-      return NextResponse.redirect(url);
+      return createRedirect('/login', { redirect: path });
+    }
+    if (userRole !== 'teacher') {
+      // Logged in as student trying to access teacher area -> redirect to student dashboard
+      return createRedirect('/student/dashboard');
     }
   }
 
-  // Protect Student Routes
+  // 2. Protect Student Routes (/student/*)
   if (path.startsWith('/student')) {
     if (!user) {
-      const url = request.nextUrl.clone();
-      url.pathname = '/login';
-      url.searchParams.set('redirect', path);
-      return NextResponse.redirect(url);
+      return createRedirect('/login', { redirect: path });
+    }
+    if (userRole !== 'student') {
+      // Logged in as teacher trying to access student area -> redirect to teacher dashboard
+      return createRedirect('/teacher/dashboard');
     }
   }
 
-  // If already logged in, redirect away from /login and /register
+  // 3. If already logged in, redirect away from /login and /register
   if (user && (path === '/login' || path === '/register')) {
-    // Check role in user metadata or profiles
-    const role = user.user_metadata?.role;
-    const url = request.nextUrl.clone();
-    if (role === 'teacher') {
-      url.pathname = '/teacher/dashboard';
+    if (userRole === 'teacher') {
+      return createRedirect('/teacher/dashboard');
     } else {
-      url.pathname = '/student/dashboard';
+      return createRedirect('/student/dashboard');
     }
-    return NextResponse.redirect(url);
   }
 
   return supabaseResponse;

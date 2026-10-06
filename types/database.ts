@@ -163,6 +163,7 @@ export interface Team {
   description: string | null;
   starting_points: number;
   current_points: number;
+  turn_order?: number;
   created_at: string;
   updated_at: string;
   members?: TeamMember[];
@@ -212,6 +213,8 @@ export interface QuestionAttempt {
   answer: string;
   is_correct: boolean;
   points_change: number;
+  status?: 'answered' | 'timeout' | 'skipped';
+  turn_number?: number;
   answered_at: string;
   question?: Question;
   team?: Team;
@@ -227,7 +230,10 @@ export interface CodingSubmission {
   code_answer: string;
   test_results: TestResultItem[];
   score: number;
+  is_correct?: boolean;
+  is_timeout?: boolean;
   max_points: number;
+  evaluation_status?: string;
   submitted_at: string;
   student?: Profile;
   team?: Team;
@@ -264,16 +270,22 @@ export interface QuestionBoardCell {
 export interface SubmitAnswerResult {
   success: boolean;
   is_correct: boolean;
+  is_timeout?: boolean;
+  status?: string;
   points_change: number;
   new_score: number;
   correct_answer?: string;
   explanation?: string;
+  message?: string;
+  already_resolved?: boolean;
   error?: string;
 }
 
 export interface SubmitCodingResult {
   success: boolean;
   is_correct: boolean;
+  is_timeout?: boolean;
+  status?: string;
   score: number;
   max_points: number;
   new_score: number;
@@ -282,5 +294,7 @@ export interface SubmitCodingResult {
   passed_count?: number;
   total_count?: number;
   test_results?: TestResultItem[];
+  message?: string;
+  already_resolved?: boolean;
   error?: string;
 }

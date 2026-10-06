@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Code2,
@@ -18,6 +18,7 @@ import {
   HelpCircle,
   Maximize2,
   X,
+  Clock,
 } from 'lucide-react';
 import { Question, TestCase, TestResultItem, SubmitCodingResult } from '@/types/database';
 import { Modal } from '@/components/ui/Modal';
@@ -33,6 +34,7 @@ interface CodingModalProps {
   onClose: () => void;
   question: Question | null;
   categoryName?: string;
+  turnStartedAt?: string | null;
   isTeacher?: boolean;
   isReadOnly?: boolean;
   onSubmitCodingAnswer?: (data: {
@@ -41,6 +43,7 @@ interface CodingModalProps {
     scoreAwarded: number;
     allPassed: boolean;
   }) => Promise<SubmitCodingResult>;
+  onTimeoutCodingAnswer?: () => Promise<SubmitCodingResult>;
   onNextQuestion?: () => void;
   isLoading?: boolean;
   isDataReady?: boolean;
@@ -51,9 +54,11 @@ export const CodingModal: React.FC<CodingModalProps> = ({
   onClose,
   question,
   categoryName,
+  turnStartedAt,
   isTeacher = false,
   isReadOnly = false,
   onSubmitCodingAnswer,
+  onTimeoutCodingAnswer,
   onNextQuestion,
   isLoading = false,
   isDataReady = true,
@@ -82,12 +87,14 @@ export const CodingModal: React.FC<CodingModalProps> = ({
   const [consoleLogs, setConsoleLogs] = useState<{ type: string; message: string }[]>([]);
   const [isTesting, setIsTesting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isTimedOut, setIsTimedOut] = useState(false);
   const [submissionResult, setSubmissionResult] = useState<SubmitCodingResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeBottomTab, setActiveBottomTab] = useState<'tests' | 'console'>('tests');
+  const timeoutTriggeredRef = useRef(false);
 
   // Reset editor state whenever a new question is loaded
-  React.useEffect(() => {
+  useEffect(() => {
     if (question && isOpen) {
       setCurrentCode(getInitialCodeBundle());
       setTestResults(null);
@@ -95,6 +102,9 @@ export const CodingModal: React.FC<CodingModalProps> = ({
       setConsoleLogs([]);
       setSubmissionResult(null);
       setErrorMessage(null);
+      setIsSubmitting(false);
+      setIsTimedOut(false);
+      timeoutTriggeredRef.current = false;
     }
   }, [question?.id, isOpen]);
 
@@ -106,6 +116,8 @@ export const CodingModal: React.FC<CodingModalProps> = ({
     setConsoleLogs([]);
     setSubmissionResult(null);
     setErrorMessage(null);
+    setIsTimedOut(false);
+    timeoutTriggeredRef.current = false;
     onClose();
   };
 
@@ -115,6 +127,7 @@ export const CodingModal: React.FC<CodingModalProps> = ({
 
   // Run Test Cases without submitting
   const handleRunTests = async () => {
+    if (isTimedOut || Boolean(submissionResult)) return;
     setIsTesting(true);
     setErrorMessage(null);
     try {
@@ -145,13 +158,12 @@ export const CodingModal: React.FC<CodingModalProps> = ({
 
   // Submit Coding Answer
   const handleSubmit = async () => {
-    if (isReadOnly || !onSubmitCodingAnswer || !isDataReady) return;
+    if (isReadOnly || !onSubmitCodingAnswer || !isDataReady || isTimedOut || isSubmitting) return;
 
     setIsSubmitting(true);
     setErrorMessage(null);
 
     try {
-      // 1. Use existing testResults from state if available; otherwise run tests once
       let resultsToSend = testResults;
       let summaryToSend = executionSummary;
 
@@ -168,7 +180,6 @@ export const CodingModal: React.FC<CodingModalProps> = ({
         setTestResults(resultsToSend);
       }
 
-      // Debug Information (Section 11)
       console.log('CODING VALIDATION', {
         questionId: question.id,
         questionType: question.question_type,
@@ -182,7 +193,7 @@ export const CodingModal: React.FC<CodingModalProps> = ({
         totalCount: summaryToSend.totalCount,
       });
 
-      // 2. Submit to server / RPC (server strictly calculates score based on testResults)
+      // Submit to server / RPC (server strictly validates time & evaluates testResults)
       const result = await onSubmitCodingAnswer({
         codeBundle: currentCode,
         testResults: resultsToSend,
@@ -193,8 +204,9 @@ export const CodingModal: React.FC<CodingModalProps> = ({
       console.log('[CodingModal] Final Submission Result from Server:', result);
       setSubmissionResult(result);
 
-      // 3. Trigger celebration ONLY IF server confirmed is_correct is true
-      if (result?.is_correct === true) {
+      if (result?.is_timeout) {
+        setIsTimedOut(true);
+      } else if (result?.is_correct === true) {
         confetti({
           particleCount: 120,
           spread: 80,
@@ -208,6 +220,33 @@ export const CodingModal: React.FC<CodingModalProps> = ({
       setIsSubmitting(false);
     }
   };
+
+  // Auto Timeout Triggered by Countdown Timer hitting 0
+  const handleTimeUp = async () => {
+    if (isTeacher || isReadOnly || submissionResult || isTimedOut || timeoutTriggeredRef.current) {
+      return;
+    }
+
+    timeoutTriggeredRef.current = true;
+    setIsTimedOut(true);
+    setErrorMessage(null);
+
+    if (onTimeoutCodingAnswer) {
+      setIsSubmitting(true);
+      try {
+        const result = await onTimeoutCodingAnswer();
+        if (result) {
+          setSubmissionResult(result);
+        }
+      } catch (err: any) {
+        console.error('[CodingModal] Timeout error:', err);
+      } finally {
+        setIsSubmitting(false);
+      }
+    }
+  };
+
+  const timeLimitSeconds = question.time_limit_seconds && question.time_limit_seconds > 0 ? question.time_limit_seconds : 30;
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} maxWidth="6xl" showCloseButton={!isSubmitting}>
@@ -224,8 +263,14 @@ export const CodingModal: React.FC<CodingModalProps> = ({
             <Badge variant="gold" size="md">
               {question.points} Points
             </Badge>
-            {question.time_limit_seconds && question.time_limit_seconds > 0 && (
-              <CountdownTimer initialSeconds={question.time_limit_seconds} isActive={isOpen} size="sm" />
+            {!submissionResult && (
+              <CountdownTimer
+                initialSeconds={timeLimitSeconds}
+                turnStartedAt={turnStartedAt}
+                isActive={isOpen && !submissionResult && !isTimedOut}
+                onTimeUp={handleTimeUp}
+                size="sm"
+              />
             )}
           </div>
 
@@ -235,6 +280,19 @@ export const CodingModal: React.FC<CodingModalProps> = ({
             </span>
           </div>
         </div>
+
+        {/* Timeout Alert Banner */}
+        {isTimedOut && !submissionResult && (
+          <div className="p-3.5 rounded-xl bg-rose-500/20 border border-rose-500/50 flex items-center gap-3 text-rose-300 animate-pulse shrink-0">
+            <Clock className="w-5 h-5 text-rose-400 shrink-0" />
+            <div>
+              <h4 className="font-bold text-sm text-white">WAKTU HABIS!</h4>
+              <p className="text-xs text-rose-300">
+                Waktu pengerjaan coding telah habis. Jawaban otomatis dikirim dan dianggap salah.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Question Prompt / Instructions */}
         <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 shrink-0">
@@ -266,17 +324,21 @@ export const CodingModal: React.FC<CodingModalProps> = ({
               value={currentCode}
               language="html_css_js"
               onChange={(updated) => {
-                setCurrentCode(updated);
-                setTestResults(null);
-                setExecutionSummary(null);
+                if (!isTimedOut && !submissionResult) {
+                  setCurrentCode(updated);
+                  setTestResults(null);
+                  setExecutionSummary(null);
+                }
               }}
               onRun={(updated) => setCurrentCode(updated)}
               onReset={() => {
-                setCurrentCode(getInitialCodeBundle());
-                setTestResults(null);
-                setExecutionSummary(null);
+                if (!isTimedOut && !submissionResult) {
+                  setCurrentCode(getInitialCodeBundle());
+                  setTestResults(null);
+                  setExecutionSummary(null);
+                }
               }}
-              readOnly={isReadOnly || Boolean(submissionResult) || isSubmitting}
+              readOnly={isReadOnly || Boolean(submissionResult) || isSubmitting || isTimedOut}
               minHeight="320px"
             />
           </div>
@@ -334,6 +396,7 @@ export const CodingModal: React.FC<CodingModalProps> = ({
                 variant="secondary"
                 size="sm"
                 isLoading={isTesting}
+                disabled={isTimedOut || isSubmitting}
                 onClick={handleRunTests}
                 leftIcon={<Play className="w-3 h-3 fill-current text-blue-400" />}
                 className="text-xs"
@@ -430,9 +493,11 @@ export const CodingModal: React.FC<CodingModalProps> = ({
               )}
               <div>
                 <h4 className="font-extrabold text-white text-base">
-                  {submissionResult.is_correct === true
-                    ? '✓ Jawaban Benar'
-                    : '✗ Jawaban Salah'}
+                  {submissionResult.is_timeout
+                    ? '⏳ WAKTU HABIS! (TIMEOUT)'
+                    : submissionResult.is_correct === true
+                    ? '✓ Jawaban Coding Benar'
+                    : '✗ Jawaban Coding Salah'}
                 </h4>
                 <p className="text-xs font-semibold mt-0.5">
                   <span className="font-mono font-bold">
@@ -482,13 +547,13 @@ export const CodingModal: React.FC<CodingModalProps> = ({
                 <Button
                   variant="primary"
                   size="lg"
-                  disabled={isSubmitting || isLoading || !isDataReady}
+                  disabled={isSubmitting || isLoading || !isDataReady || isTimedOut}
                   isLoading={isSubmitting}
                   onClick={handleSubmit}
                   leftIcon={<Send className="w-4 h-4" />}
                   className="font-bold shadow-xl shadow-blue-500/20"
                 >
-                  Kirim Jawaban Coding
+                  {isTimedOut ? 'Waktu Habis' : 'Kirim Jawaban Coding'}
                 </Button>
               ) : (
                 <Button variant="secondary" size="lg" disabled className="text-xs font-semibold">
