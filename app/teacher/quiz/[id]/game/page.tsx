@@ -773,7 +773,11 @@ export default function GameMasterPage({ params }: { params: Promise<{ id: strin
           onClose={() => setIsQuestionModalOpen(false)}
           question={selectedQuestion}
           categoryName={categories.find((c) => c.id === selectedQuestion.category_id)?.name}
-          turnStartedAt={session?.turn_started_at}
+          turnStartedAt={
+            session?.turn_status === 'answering' && session?.current_question_id === selectedQuestion.id
+              ? session?.turn_started_at
+              : null
+          }
           isTeacher={true}
           onTeacherAwardPoints={handleTeacherAwardPoints}
           onNextQuestion={handleNextTurn}

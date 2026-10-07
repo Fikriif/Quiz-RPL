@@ -459,7 +459,16 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
     try {
       const activeTeamId = myTeam?.team_id || myTeam?.id;
       if (session && activeTeamId && currentUserId) {
-        const { error } = await supabase.rpc('select_question_for_turn', {
+        console.log('[QUESTION_SELECTED]', {
+          session_id: session.id,
+          team_id: activeTeamId,
+          player_id: currentUserId,
+          question_id: q.id,
+          turn_number: session.turn_number,
+          turn_status: session.turn_status,
+        });
+
+        const { data, error } = await supabase.rpc('select_question_for_turn', {
           p_session_id: session.id,
           p_team_id: activeTeamId,
           p_player_id: currentUserId,
@@ -467,6 +476,21 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
         });
 
         if (error) throw error;
+
+        // Immediately update local session state with the fresh server turn_started_at
+        if (data) {
+          console.log('[TIMER_STARTED]', {
+            question_id: q.id,
+            turn_started_at: data.turn_started_at,
+            time_limit_seconds: data.time_limit_seconds,
+          });
+          setSession((prev) => (prev ? {
+            ...prev,
+            current_question_id: q.id,
+            turn_status: 'answering',
+            turn_started_at: data.turn_started_at || new Date().toISOString(),
+          } : null));
+        }
       }
 
       setSelectedQuestion(q);
@@ -621,6 +645,13 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
       throw new Error('Data sesi atau tim tidak lengkap untuk proses timeout.');
     }
 
+    console.log('[TIMEOUT_TRIGGERED]', {
+      question_id: selectedQuestion.id,
+      current_question_id: activeSession.current_question_id,
+      turn_status: activeSession.turn_status,
+      turn_started_at: activeSession.turn_started_at,
+    });
+
     const { data, error } = await supabase.rpc('submit_quiz_answer', {
       p_session_id: activeSession.id,
       p_question_id: selectedQuestion.id,
@@ -742,6 +773,13 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
       }
     }
 
+    console.log('[ANSWER_SUBMITTED] Submitting coding answer:', {
+      question_id: questionId,
+      current_question_id: activeSession.current_question_id,
+      turn_status: activeSession.turn_status,
+      test_results_count: testResults.length,
+    });
+
     // Call atomic RPC with canonical parameters and timeout flag false
     const { data: rpcRes, error: rpcErr } = await supabase.rpc('submit_coding_quiz_answer', {
       p_session_id: sessionId,
@@ -786,6 +824,13 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
     if (!activeSession || !selectedQuestion || !activeTeam || !activeUser) {
       throw new Error('Data sesi atau tim tidak lengkap.');
     }
+
+    console.log('[TIMEOUT_TRIGGERED] Coding question timeout:', {
+      question_id: selectedQuestion.id,
+      current_question_id: activeSession.current_question_id,
+      turn_status: activeSession.turn_status,
+      turn_started_at: activeSession.turn_started_at,
+    });
 
     const { data: rpcRes, error: rpcErr } = await supabase.rpc('submit_coding_quiz_answer', {
       p_session_id: activeSession.id,
@@ -1247,7 +1292,11 @@ export default function StudentQuizArenaPage({ params }: { params: Promise<{ id:
           onClose={() => setIsQuestionModalOpen(false)}
           question={selectedQuestion}
           categoryName={categories.find((c) => c.id === selectedQuestion.category_id)?.name}
-          turnStartedAt={session?.turn_started_at}
+          turnStartedAt={
+            session?.turn_status === 'answering' && session?.current_question_id === selectedQuestion.id
+              ? session?.turn_started_at
+              : null
+          }
           isTeacher={false}
           isReadOnly={!isMyPlayerTurn}
           onSubmitAnswer={handleSubmitAnswer}

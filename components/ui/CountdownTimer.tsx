@@ -24,14 +24,14 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
   const hasFiredTimeUp = useRef(false);
 
   // Calculate remaining seconds based on server turn_started_at timestamp
-  const calculateRemaining = useCallback((): number => {
+  const calculateRemaining = useCallback((): number | null => {
     if (!turnStartedAt) {
-      return totalDuration;
+      return null;
     }
 
     const startTime = new Date(turnStartedAt).getTime();
     if (isNaN(startTime)) {
-      return totalDuration;
+      return null;
     }
 
     const deadline = startTime + totalDuration * 1000;
@@ -41,28 +41,38 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
     return Math.max(0, Math.ceil(remainingMs / 1000));
   }, [turnStartedAt, totalDuration]);
 
-  const [seconds, setSeconds] = useState<number>(() => calculateRemaining());
+  const [seconds, setSeconds] = useState<number>(() => {
+    const rem = calculateRemaining();
+    return rem !== null ? rem : totalDuration;
+  });
 
   // Reset trigger flag when turnStartedAt or initialSeconds changes
   useEffect(() => {
     hasFiredTimeUp.current = false;
     const initialRemaining = calculateRemaining();
-    setSeconds(initialRemaining);
 
-    if (isActive && initialRemaining <= 0 && !hasFiredTimeUp.current) {
-      hasFiredTimeUp.current = true;
-      if (onTimeUp) {
-        onTimeUp();
+    if (initialRemaining !== null) {
+      setSeconds(initialRemaining);
+      // Only fire onTimeUp on mount if turnStartedAt is legitimately in the past by full duration
+      if (isActive && initialRemaining <= 0 && !hasFiredTimeUp.current) {
+        hasFiredTimeUp.current = true;
+        if (onTimeUp) {
+          onTimeUp();
+        }
       }
+    } else {
+      setSeconds(totalDuration);
     }
-  }, [turnStartedAt, initialSeconds, calculateRemaining, isActive, onTimeUp]);
+  }, [turnStartedAt, initialSeconds, calculateRemaining, isActive, onTimeUp, totalDuration]);
 
   // High-frequency interval (200ms) to ensure smooth accuracy and instant reconnect calculation
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive || !turnStartedAt) return;
 
     const tick = () => {
       const remaining = calculateRemaining();
+      if (remaining === null) return;
+
       setSeconds(remaining);
 
       if (remaining <= 0 && !hasFiredTimeUp.current) {
@@ -77,7 +87,7 @@ export const CountdownTimer: React.FC<CountdownTimerProps> = ({
     const interval = setInterval(tick, 200);
 
     return () => clearInterval(interval);
-  }, [isActive, calculateRemaining, onTimeUp]);
+  }, [isActive, turnStartedAt, calculateRemaining, onTimeUp]);
 
   const percentage = Math.min(100, Math.max(0, (seconds / totalDuration) * 100));
   const isUrgent = seconds <= 5;

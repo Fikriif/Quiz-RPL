@@ -223,20 +223,22 @@ export const CodingModal: React.FC<CodingModalProps> = ({
 
   // Auto Timeout Triggered by Countdown Timer hitting 0
   const handleTimeUp = async () => {
-    if (isTeacher || isReadOnly || submissionResult || isTimedOut || timeoutTriggeredRef.current) {
+    if (isTeacher || isReadOnly || submissionResult || isTimedOut || timeoutTriggeredRef.current || !turnStartedAt || !question) {
       return;
     }
 
     timeoutTriggeredRef.current = true;
-    setIsTimedOut(true);
     setErrorMessage(null);
 
     if (onTimeoutCodingAnswer) {
       setIsSubmitting(true);
       try {
         const result = await onTimeoutCodingAnswer();
-        if (result) {
+        if (result && result.success && result.is_timeout) {
+          setIsTimedOut(true);
           setSubmissionResult(result);
+        } else if (result && result.already_resolved) {
+          console.warn('[CodingModal] Turn already resolved, ignoring timeout trigger.');
         }
       } catch (err: any) {
         console.error('[CodingModal] Timeout error:', err);
